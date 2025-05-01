@@ -61,6 +61,11 @@ class PlaceFieldSystemBase(ABC):
     def plot_population_response(self, position):
         """Plot the population response for a specific position."""
         pass
+    
+    @abstractmethod
+    def plot_decoder_weights(self):
+        """Plot the learned decoder weights."""
+        pass
 
 class PlaceFieldSystem1D(PlaceFieldSystemBase):
     @property
@@ -83,6 +88,21 @@ class PlaceFieldSystem1D(PlaceFieldSystemBase):
         plt.xlabel('Position')
         plt.ylabel('Response')
         plt.grid(True)
+        plt.show()
+    
+    def plot_decoder_weights(self):
+        """Plot decoder weights for 1D case."""
+        weights = self.weights.detach().numpy()
+        centers = self.centers.flatten()
+        
+        plt.figure(figsize=(10, 4))
+        plt.plot(centers, weights, 'b-', label='Weights')
+        plt.scatter(centers, weights, c='b', alpha=0.6)
+        plt.title('1D Decoder Weights')
+        plt.xlabel('Cell Center Position')
+        plt.ylabel('Weight')
+        plt.grid(True)
+        plt.legend()
         plt.show()
     
     def plot_population_response(self, position):
@@ -135,6 +155,37 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
             ax.set_xlabel('X Position')
             ax.set_ylabel('Y Position')
             ax.set_zlabel('Response')
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_decoder_weights(self):
+        """Plot decoder weights for 2D case."""
+        weights = self.weights.detach().numpy()
+        
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+        
+        # Reshape weights for each output dimension
+        weight_grid_x = weights[:, 0].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
+        weight_grid_y = weights[:, 1].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
+        
+        # Plot X-dimension weights
+        im1 = ax1.imshow(weight_grid_x, extent=[self.pos_range[0], self.pos_range[1],
+                                               self.pos_range[0], self.pos_range[1]],
+                        origin='lower', cmap='RdBu_r')
+        plt.colorbar(im1, ax=ax1, label='Weight Value')
+        ax1.set_title('X-dimension Decoder Weights')
+        ax1.set_xlabel('X Position')
+        ax1.set_ylabel('Y Position')
+        
+        # Plot Y-dimension weights
+        im2 = ax2.imshow(weight_grid_y, extent=[self.pos_range[0], self.pos_range[1],
+                                               self.pos_range[0], self.pos_range[1]],
+                        origin='lower', cmap='RdBu_r')
+        plt.colorbar(im2, ax=ax2, label='Weight Value')
+        ax2.set_title('Y-dimension Decoder Weights')
+        ax2.set_xlabel('X Position')
+        ax2.set_ylabel('Y Position')
         
         plt.tight_layout()
         plt.show()
@@ -192,6 +243,33 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
                           origin='lower', cmap='viridis')
             plt.colorbar(im, ax=ax)
             ax.set_title(f'3D Place Cell at z={z:.1f}')
+            ax.set_xlabel('X Position')
+            ax.set_ylabel('Y Position')
+        
+        plt.tight_layout()
+        plt.show()
+    
+    def plot_decoder_weights(self):
+        """Plot decoder weights for 3D case."""
+        weights = self.weights.detach().numpy()
+        
+        fig = plt.figure(figsize=(15, 4))
+        titles = ['X-dimension', 'Y-dimension', 'Z-dimension']
+        
+        for dim in range(3):
+            weight_cube = weights[:, dim].reshape(self.n_cells_per_dim, 
+                                                self.n_cells_per_dim,
+                                                self.n_cells_per_dim)
+            
+            # Show middle slice for each axis
+            ax = fig.add_subplot(1, 3, dim + 1)
+            slice_data = weight_cube[:, :, self.n_cells_per_dim//2]
+            
+            im = ax.imshow(slice_data, origin='lower', cmap='RdBu_r',
+                          extent=[self.pos_range[0], self.pos_range[1],
+                                 self.pos_range[0], self.pos_range[1]])
+            plt.colorbar(im, ax=ax, label='Weight Value')
+            ax.set_title(f'{titles[dim]} Weights\n(Middle Z-slice)')
             ax.set_xlabel('X Position')
             ax.set_ylabel('Y Position')
         
@@ -337,6 +415,10 @@ def main():
         # Train the decoder
         print("\nTraining decoder...")
         train_decoder(system)
+        
+        # Show decoder weights
+        print("\nDecoder weight visualization:")
+        system.plot_decoder_weights()
         
         # Show example responses
         if system.n_dims == 1:

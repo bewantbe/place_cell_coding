@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Trashes
+ehthumbs.db
+Thumbs.db

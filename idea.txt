@@ -1,0 +1,54 @@
+Understanding of Place Cell-like Coding
+
+Idealized system
+================
+
+Suppose the subject (with brain) is living in a 1-dimensional space.
+
+There are cells that response to the position in the space, called place cells. 
+Each cell has a bell-shape like response when moving position, and different 
+cell has max response center at different position.
+
+Now consider construct a decoder, that decode the position from the cell 
+responses. For simplicity, we require the decoder output a coordinate of 
+the postition.
+
+Thought:
+
+1.
+How simple can be the decoder?
+We may have three level of decoder: (1) rate based neuron without any
+ measurement noise; (2) rate-based neuron with noise in bell-shape and 
+ measurement; (3) spiking neuron with limited time measurement.
+
+1.1
+It seems that in the setup (1), the decoder can be accomplished by a simple
+linear weighted summation. We need to write a code to verify it.
+If it is true then (2) (3) can be impliemnted the same way.
+
+2.
+Decoded result, the coordinate, is an abstract representation of the position.
+The process of from position to place cell response is a mental sensing of place.
+The decoder is a process that matches the mental sensing with abstract representation.
+
+3.
+The decoded result can be used to instruct limb movement or served as a goal for
+movement, such as the arm-reaching.
+
+4.
+The population place field (response of all place cells) and coordinate-like
+ response are two equivalant ways for representing postion.
+It seems that there are few algorithms that are based on the place field 
+ representation.
+We may try to construct such algorithm.
+
+5.
+This place field v.s. coordinate representation relationship, due to its
+ simplicity, may exist other system of brain. This is yet to explorer.
+
+5.1
+Maybe the receptive field of visual system, can be understood the same way.
+
+5.2
+Maybe the mental attention can be understood the same way.
+

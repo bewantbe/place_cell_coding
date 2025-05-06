@@ -302,7 +302,30 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
         plt.tight_layout()
         plt.show()
 
-def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_size=100):
+def plot_training_curves(losses, accuracies):
+    """Plot training loss and accuracy curves."""
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 4))
+    
+    # Loss curve
+    ax1.semilogy(losses)
+    ax1.set_title('Training Loss (Log Scale)')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('MSE Loss (log)')
+    ax1.grid(True, which="both", ls="-", alpha=0.2)
+    ax1.grid(True, which="major", ls="-", alpha=0.5)
+    
+    # Accuracy curve
+    ax2.semilogy(accuracies)
+    ax2.set_title('Decoding Error (Log Scale)')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Mean Euclidean Error (log)')
+    ax2.grid(True, which="both", ls="-", alpha=0.2)
+    ax2.grid(True, which="major", ls="-", alpha=0.5)
+    
+    plt.tight_layout()
+    plt.show()
+
+def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_size=100, verbose=True):
     """Train the decoder weights using random positions."""
     optimizer = torch.optim.Adam([system.weights], lr=learning_rate)
     losses = []
@@ -311,12 +334,12 @@ def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_
     for epoch in range(n_epochs):
         # Generate random positions for training
         positions = np.random.uniform(system.pos_range[0], 
-                                    system.pos_range[1], 
-                                    (batch_size, system.n_dims))
+                                      system.pos_range[1], 
+                                      (batch_size, system.n_dims))
         
         # Compute place fields
         place_fields = np.array([system.compute_place_field(pos) 
-                               for pos in positions])
+                                 for pos in positions])
         place_fields_tensor = torch.tensor(place_fields, dtype=torch.float32)
         positions_tensor = torch.tensor(positions, dtype=torch.float32)
         
@@ -335,39 +358,18 @@ def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_
         
         # Compute validation accuracy
         val_positions = np.random.uniform(system.pos_range[0], 
-                                        system.pos_range[1], 
-                                        (val_size, system.n_dims))
+                                          system.pos_range[1], 
+                                          (val_size, system.n_dims))
         val_place_fields = np.array([system.compute_place_field(pos) 
-                                   for pos in val_positions])
+                                     for pos in val_positions])
         val_decoded = np.array([system.decode_position(pf).detach().numpy() 
-                              for pf in val_place_fields])
+                                for pf in val_place_fields])
         errors = np.sqrt(np.sum((val_decoded - val_positions) ** 2, axis=1))
         mean_error = np.mean(errors)
         accuracies.append(mean_error)
         
-        if (epoch + 1) % 100 == 0:
+        if verbose and (epoch + 1) % 100 == 0:
             print(f'Epoch {epoch+1}, Loss: {loss.item():.6f}, Mean Error: {mean_error:.4f}')
-    
-    # Plot training curves
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 4))
-    
-    # Loss curve
-    ax1.semilogy(losses)
-    ax1.set_title('Training Loss (Log Scale)')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('MSE Loss (log)')
-    ax1.grid(True, which="both", ls="-", alpha=0.2)
-    ax1.grid(True, which="major", ls="-", alpha=0.5)
-    
-    # Accuracy curve
-    ax2.plot(accuracies)
-    ax2.set_title('Decoding Error')
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Mean Euclidean Error')
-    ax2.grid(True)
-    
-    plt.tight_layout()
-    plt.show()
     
     return losses, accuracies
 
@@ -375,8 +377,8 @@ def evaluate_decoder(system, n_test=1000):
     """Evaluate decoder accuracy with test positions."""
     # Generate test positions
     test_positions = np.random.uniform(system.pos_range[0], 
-                                     system.pos_range[1], 
-                                     (n_test, system.n_dims))
+                                       system.pos_range[1], 
+                                       (n_test, system.n_dims))
     
     # Get decoded positions
     decoded_positions = []
@@ -396,7 +398,7 @@ def evaluate_decoder(system, n_test=1000):
     
     return errors
 
-def main():
+def main_demo():
     # Test all three systems
     systems = [
         PlaceFieldSystem1D(n_cells_per_dim=50),
@@ -414,7 +416,8 @@ def main():
         
         # Train the decoder
         print("\nTraining decoder...")
-        train_decoder(system)
+        losses, accuracies = train_decoder(system, verbose=True)
+        plot_training_curves(losses, accuracies)
         
         # Show decoder weights
         print("\nDecoder weight visualization:")
@@ -435,5 +438,38 @@ def main():
         # Evaluate decoder
         evaluate_decoder(system)
 
+def main_stat_1D(n_trials=100, n_cells=50):
+    """
+    Repeatedly test PlaceFieldSystem1D and analyze final mean errors.
+    
+    Args:
+        n_trials: Number of trials/initializations
+        n_cells: Number of cells per dimension
+    """
+    final_errors = []
+    
+    for trial in range(n_trials):
+        # Create and train system
+        system = PlaceFieldSystem1D(n_cells_per_dim=n_cells)
+        losses, accuracies = train_decoder(system, verbose=False)
+        final_errors.append(accuracies[-1])
+    
+    # Plot histogram
+    plt.figure(figsize=(10, 6))
+    plt.hist(final_errors, bins=30)
+    plt.title('Distribution of Final Mean Errors')
+    plt.xlabel('Mean Error')
+    plt.ylabel('Count')
+    plt.grid(True)
+    
+    # Display statistics
+    print("\nError Statistics:")
+    print(f"Mean: {np.mean(final_errors):.4f}")
+    print(f"Std: {np.std(final_errors):.4f}")
+    print(f"Min: {np.min(final_errors):.4f}")
+    print(f"Max: {np.max(final_errors):.4f}")
+    
+    plt.show()
+
 if __name__ == "__main__":
-    main()
+    main_stat_1D()

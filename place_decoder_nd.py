@@ -48,31 +48,29 @@ class PlaceFieldSystemBase(ABC):
         Args:
             positions: tensor of shape (batch_size, n_dims) or (n_dims,)
         """
-        if not isinstance(positions, torch.Tensor):
-            positions = torch.tensor(positions, dtype=torch.float32, device=self.device)
-        if positions.dim() == 1:
-            positions = positions.unsqueeze(0)
+        # Ensure positions is at least 2D
+        if positions.dim() == 0:  # scalar tensor
+            positions = positions.view(1, 1)
+        elif positions.dim() == 1:  # single position vector
+            positions = positions.view(1, -1)
             
-        positions = positions.to(self.device)
+        # Compute squared distances directly using broadcasting
+        squared_diff = (self.centers.unsqueeze(0) - positions.unsqueeze(1)) ** 2
+        distances = torch.sqrt(squared_diff.sum(dim=-1))
         
-        # Compute distances for all positions at once
-        # centers: (total_cells, n_dims)
-        # positions: (batch_size, n_dims)
-        # distances: (batch_size, total_cells)
-        distances = torch.sqrt(torch.sum((self.centers.unsqueeze(0) - positions.unsqueeze(1)) ** 2, dim=2))
         # Compute Gaussian response
         responses = torch.exp(-0.5 * (distances / self.sigma) ** 2)
         
         return responses.squeeze()
     
     def decode_position(self, place_field):
-        """Decode position from place cell responses."""
-        if not isinstance(place_field, torch.Tensor):
-            place_field = torch.tensor(place_field, dtype=torch.float32, device=self.device)
+        """Decode position from place cell responses.
+        
+        Args:
+            place_field: tensor of shape (batch_size, total_cells) or (total_cells,)
+        """
         if place_field.dim() == 1:
             place_field = place_field.unsqueeze(0)
-            
-        # Weighted sum for each dimension
         return torch.matmul(place_field, self.weights)
     
     @abstractmethod
@@ -102,14 +100,17 @@ class PlaceFieldSystem1D(PlaceFieldSystemBase):
     def plot_place_fields(self):
         """Plot place fields for 1D case."""
         with torch.no_grad():
-            # Generate positions on device
-            positions = torch.linspace(self.pos_range[0], self.pos_range[1], 200, device=self.device).reshape(-1, 1)
-            # Compute responses in one batch
-            responses = self.compute_place_field(positions).cpu().numpy()
-            positions = positions.squeeze().cpu().numpy()
+            # Generate positions and compute responses in single batch
+            positions = torch.linspace(self.pos_range[0], self.pos_range[1], 200, 
+                                     dtype=torch.float32, device=self.device).reshape(-1, 1)
+            responses = self.compute_place_field(positions)
+            
+            # Transfer to CPU for plotting
+            positions_np = positions.squeeze().cpu().numpy()
+            responses_np = responses.cpu().numpy()
             
             plt.figure(figsize=(10, 5))
-            plt.plot(positions, responses)
+            plt.plot(positions_np, responses_np)
             plt.title('1D Place Cell Response Curves')
             plt.xlabel('Position')
             plt.ylabel('Response')
@@ -133,18 +134,21 @@ class PlaceFieldSystem1D(PlaceFieldSystemBase):
             plt.show()
     
     def plot_population_response(self, position):
-        """Plot population response for 1D case."""
+        """Plot population response for 1D case.
+        
+        Args:
+            position: tensor of shape (1,) representing the position
+        """
         with torch.no_grad():
-            if not isinstance(position, torch.Tensor):
-                position = torch.tensor([position], dtype=torch.float32, device=self.device)
             responses = self.compute_place_field(position).cpu().numpy()
+            pos_value = position.item()
             
             plt.figure(figsize=(10, 4))
             plt.bar(np.arange(self.total_cells), responses, alpha=0.6)
-            plt.axvline(x=(position.item() - self.pos_range[0]) / 
+            plt.axvline(x=(pos_value - self.pos_range[0]) / 
                        (self.pos_range[1] - self.pos_range[0]) * self.total_cells,
-                       color='r', linestyle='--', label=f'True Position: {position.item():.2f}')
-            plt.title(f'1D Population Response at Position {position.item():.2f}')
+                       color='r', linestyle='--', label=f'True Position: {pos_value:.2f}')
+            plt.title(f'1D Population Response at Position {pos_value:.2f}')
             plt.xlabel('Cell Index')
             plt.ylabel('Response')
             plt.grid(True)
@@ -166,15 +170,21 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
     def plot_place_fields(self):
         """Plot example place fields for 2D case."""
         with torch.no_grad():
-            x = torch.linspace(self.pos_range[0], self.pos_range[1], 50, device=self.device)
-            y = torch.linspace(self.pos_range[0], self.pos_range[1], 50, device=self.device)
+            # Generate grid positions with proper dtype
+            x = torch.linspace(self.pos_range[0], self.pos_range[1], 50, 
+                             dtype=torch.float32, device=self.device)
+            y = torch.linspace(self.pos_range[0], self.pos_range[1], 50, 
+                             dtype=torch.float32, device=self.device)
             xx, yy = torch.meshgrid(x, y, indexing='ij')
             positions = torch.stack([xx.flatten(), yy.flatten()], dim=1)
             
             # Compute responses for all positions at once
             all_responses = self.compute_place_field(positions)
             
-            # Plot responses for a few example cells
+            # Transfer to CPU once for plotting
+            xx_np = xx.cpu().numpy()
+            yy_np = yy.cpu().numpy()
+            
             fig = plt.figure(figsize=(15, 5))
             example_cells = [0, self.total_cells // 4, self.total_cells // 2]
             
@@ -182,7 +192,7 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
                 ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
                 responses = all_responses[:, cell_idx].reshape(50, 50).cpu().numpy()
                 
-                surf = ax.plot_surface(xx.cpu().numpy(), yy.cpu().numpy(), responses, cmap='viridis')
+                surf = ax.plot_surface(xx_np, yy_np, responses, cmap='viridis')
                 plt.colorbar(surf, ax=ax)
                 ax.set_title(f'2D Place Cell {cell_idx}')
                 ax.set_xlabel('X Position')
@@ -195,27 +205,26 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
     def plot_decoder_weights(self):
         """Plot decoder weights for 2D case."""
         with torch.no_grad():
-            weights = self.weights.cpu().numpy()
+            # Reshape weights on GPU
+            weights = self.weights.reshape(self.n_cells_per_dim, self.n_cells_per_dim, 2)
+            # Transfer to CPU once
+            weights_np = weights.cpu().numpy()
             
             fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
             
-            # Reshape weights for each output dimension
-            weight_grid_x = weights[:, 0].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
-            weight_grid_y = weights[:, 1].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
-            
             # Plot X-dimension weights
-            im1 = ax1.imshow(weight_grid_x, extent=[self.pos_range[0], self.pos_range[1],
-                                                   self.pos_range[0], self.pos_range[1]],
-                            origin='lower', cmap='RdBu_r')
+            im1 = ax1.imshow(weights_np[..., 0], extent=[self.pos_range[0], self.pos_range[1],
+                                                        self.pos_range[0], self.pos_range[1]],
+                           origin='lower', cmap='RdBu_r')
             plt.colorbar(im1, ax=ax1, label='Weight Value')
             ax1.set_title('X-dimension Decoder Weights')
             ax1.set_xlabel('X Position')
             ax1.set_ylabel('Y Position')
             
             # Plot Y-dimension weights
-            im2 = ax2.imshow(weight_grid_y, extent=[self.pos_range[0], self.pos_range[1],
-                                                   self.pos_range[0], self.pos_range[1]],
-                            origin='lower', cmap='RdBu_r')
+            im2 = ax2.imshow(weights_np[..., 1], extent=[self.pos_range[0], self.pos_range[1],
+                                                        self.pos_range[0], self.pos_range[1]],
+                           origin='lower', cmap='RdBu_r')
             plt.colorbar(im2, ax=ax2, label='Weight Value')
             ax2.set_title('Y-dimension Decoder Weights')
             ax2.set_xlabel('X Position')
@@ -225,20 +234,22 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
             plt.show()
     
     def plot_population_response(self, position):
-        """Plot population response for 2D case."""
+        """Plot population response for 2D case.
+        
+        Args:
+            position: tensor of shape (2,) representing the 2D position
+        """
         with torch.no_grad():
-            if not isinstance(position, torch.Tensor):
-                position = torch.tensor(position, dtype=torch.float32, device=self.device)
             responses = self.compute_place_field(position)
             response_grid = responses.reshape(self.n_cells_per_dim, self.n_cells_per_dim).cpu().numpy()
-            pos_np = position.cpu().numpy()
+            pos_x, pos_y = position.cpu().numpy()
             
             plt.figure(figsize=(8, 6))
             plt.imshow(response_grid, extent=[self.pos_range[0], self.pos_range[1],
                                           self.pos_range[0], self.pos_range[1]],
                     origin='lower', cmap='viridis')
-            plt.plot(pos_np[0], pos_np[1], 'r*', markersize=15, 
-                    label=f'True Position: ({pos_np[0]:.2f}, {pos_np[1]:.2f})')
+            plt.plot(pos_x, pos_y, 'r*', markersize=15, 
+                    label=f'True Position: ({pos_x:.2f}, {pos_y:.2f})')
             plt.colorbar(label='Response')
             plt.title('2D Population Response')
             plt.xlabel('X Position')
@@ -262,32 +273,43 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
     def plot_place_fields(self):
         """Plot example place fields for 3D case using slices."""
         with torch.no_grad():
-            x = torch.linspace(self.pos_range[0], self.pos_range[1], 20, device=self.device)
-            y = torch.linspace(self.pos_range[0], self.pos_range[1], 20, device=self.device)
+            # Generate grid positions with proper dtype
+            x = torch.linspace(self.pos_range[0], self.pos_range[1], 20, 
+                             dtype=torch.float32, device=self.device)
+            y = torch.linspace(self.pos_range[0], self.pos_range[1], 20, 
+                             dtype=torch.float32, device=self.device)
             xx, yy = torch.meshgrid(x, y, indexing='ij')
             
             # Plot responses for example cells at different z-slices
             fig = plt.figure(figsize=(15, 5))
             example_cell = self.total_cells // 2
-            z_slices = [-0.5, 0.0, 0.5]
+            z_slices = torch.tensor([-0.5, 0.0, 0.5], device=self.device)
+            points_per_slice = xx.numel()  # 20x20=400 points
             
-            # Create all positions at once for batch processing
-            positions = []
-            for z in z_slices:
-                xy_points = torch.stack([xx.flatten(), yy.flatten()], dim=1)
-                z_points = torch.full((xy_points.shape[0], 1), z, device=self.device)
-                positions.append(torch.cat([xy_points, z_points], dim=1))
+            # Create all positions at once using broadcasting
+            xy_points = torch.stack([xx.flatten(), yy.flatten()], dim=1)
+            z_points = z_slices.view(-1, 1, 1).expand(-1, points_per_slice, 1)
+            positions = torch.cat([
+                xy_points.unsqueeze(0).expand(len(z_slices), -1, -1),
+                z_points
+            ], dim=2)
+            positions = positions.reshape(-1, 3)  # Flatten to (N, 3)
             
-            all_positions = torch.cat(positions)
-            all_responses = self.compute_place_field(all_positions)
+            # Compute all responses in one batch
+            all_responses = self.compute_place_field(positions)
             
-            for idx, z in enumerate(z_slices):
+            # Transfer to CPU once for plotting
+            xx_np = xx.cpu().numpy()
+            yy_np = yy.cpu().numpy()
+            responses_np = all_responses[:, example_cell].cpu().numpy()
+            
+            for idx, z in enumerate(z_slices.cpu().numpy()):
                 ax = fig.add_subplot(1, 3, idx + 1)
-                start_idx = idx * 400  # 20x20=400 points per slice
-                responses = all_responses[start_idx:start_idx + 400, example_cell].reshape(20, 20).cpu().numpy()
+                start_idx = idx * points_per_slice
+                slice_responses = responses_np[start_idx:start_idx + points_per_slice].reshape(20, 20)
                 
-                im = ax.imshow(responses, extent=[self.pos_range[0], self.pos_range[1],
-                                              self.pos_range[0], self.pos_range[1]],
+                im = ax.imshow(slice_responses, extent=[self.pos_range[0], self.pos_range[1],
+                                                      self.pos_range[0], self.pos_range[1]],
                             origin='lower', cmap='viridis')
                 plt.colorbar(im, ax=ax)
                 ax.set_title(f'3D Place Cell at z={z:.1f}')
@@ -300,23 +322,21 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
     def plot_decoder_weights(self):
         """Plot decoder weights for 3D case."""
         with torch.no_grad():
-            weights = self.weights.cpu().numpy()
+            # Reshape weights on GPU
+            weights = self.weights.reshape(self.n_cells_per_dim, 
+                                        self.n_cells_per_dim,
+                                        self.n_cells_per_dim, 3)
+            # Extract middle slices for each dimension
+            middle_slices = weights[:, :, self.n_cells_per_dim//2, :].cpu().numpy()
             
             fig = plt.figure(figsize=(15, 4))
             titles = ['X-dimension', 'Y-dimension', 'Z-dimension']
             
             for dim in range(3):
-                weight_cube = weights[:, dim].reshape(self.n_cells_per_dim, 
-                                                    self.n_cells_per_dim,
-                                                    self.n_cells_per_dim)
-                
-                # Show middle slice for each axis
                 ax = fig.add_subplot(1, 3, dim + 1)
-                slice_data = weight_cube[:, :, self.n_cells_per_dim//2]
-                
-                im = ax.imshow(slice_data, origin='lower', cmap='RdBu_r',
-                              extent=[self.pos_range[0], self.pos_range[1],
-                                     self.pos_range[0], self.pos_range[1]])
+                im = ax.imshow(middle_slices[..., dim], origin='lower', cmap='RdBu_r',
+                             extent=[self.pos_range[0], self.pos_range[1],
+                                    self.pos_range[0], self.pos_range[1]])
                 plt.colorbar(im, ax=ax, label='Weight Value')
                 ax.set_title(f'{titles[dim]} Weights\n(Middle Z-slice)')
                 ax.set_xlabel('X Position')
@@ -326,15 +346,17 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
             plt.show()
     
     def plot_population_response(self, position):
-        """Plot population response for 3D case using orthogonal slices."""
+        """Plot population response for 3D case using orthogonal slices.
+        
+        Args:
+            position: tensor of shape (3,) representing the 3D position
+        """
         with torch.no_grad():
-            if not isinstance(position, torch.Tensor):
-                position = torch.tensor(position, dtype=torch.float32, device=self.device)
             responses = self.compute_place_field(position)
             response_cube = responses.reshape(self.n_cells_per_dim, 
                                            self.n_cells_per_dim,
                                            self.n_cells_per_dim).cpu().numpy()
-            pos_np = position.cpu().numpy()
+            pos_x, pos_y, pos_z = position.cpu().numpy()
             
             # Plot three orthogonal slices through the true position
             fig = plt.figure(figsize=(15, 5))
@@ -351,7 +373,7 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
                 plt.colorbar(im, ax=ax)
                 ax.set_title(f'3D Population Response ({name} plane)')
             
-            plt.suptitle(f'Position: ({pos_np[0]:.2f}, {pos_np[1]:.2f}, {pos_np[2]:.2f})')
+            plt.suptitle(f'Position: ({pos_x:.2f}, {pos_y:.2f}, {pos_z:.2f})')
             plt.tight_layout()
             plt.show()
 
@@ -378,7 +400,7 @@ def plot_training_curves(losses, accuracies):
     plt.tight_layout()
     plt.show()
 
-def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_size=100, verbose=True):
+def train_decoder(system, n_epochs=100, batch_size=320, learning_rate=0.1, val_size=100, verbose=True):
     """Train the decoder weights using random positions."""
     optimizer = torch.optim.Adam([system.weights], lr=learning_rate)
     losses = []
@@ -469,28 +491,40 @@ def main_demo():
         print("\nDecoder weight visualization:")
         system.plot_decoder_weights()
         
-        # Show example responses
-        if system.n_dims == 1:
-            positions = [-0.5, 0.0, 0.5]
-        elif system.n_dims == 2:
-            positions = [[-0.5, -0.5], [0.0, 0.0], [0.5, 0.5]]
-        else:  # 3D
-            positions = [[-0.5, -0.5, -0.5], [0.0, 0.0, 0.0], [0.5, 0.5, 0.5]]
-        
+        # Show example responses with tensor positions
         print("\nExample population responses:")
-        for pos in positions:
-            system.plot_population_response(pos)
+        if system.n_dims == 1:
+            positions = torch.tensor([-0.5, 0.0, 0.5], device=system.device)
+            for pos in positions:
+                system.plot_population_response(pos)
+        elif system.n_dims == 2:
+            positions = torch.tensor([
+                [-0.5, -0.5],
+                [0.0, 0.0],
+                [0.5, 0.5]
+            ], device=system.device)
+            for pos in positions:
+                system.plot_population_response(pos)
+        else:  # 3D
+            positions = torch.tensor([
+                [-0.5, -0.5, -0.5],
+                [0.0, 0.0, 0.0],
+                [0.5, 0.5, 0.5]
+            ], device=system.device)
+            for pos in positions:
+                system.plot_population_response(pos)
         
         # Evaluate decoder
         evaluate_decoder(system)
 
-def main_stat_1D(n_trials=100, n_cells=50):
+def main_stat_1D(n_trials=100, n_cells=50, show_plot=False):
     """
     Repeatedly test PlaceFieldSystem1D and analyze final mean errors.
     
     Args:
         n_trials: Number of trials/initializations
         n_cells: Number of cells per dimension
+        show_plot: Whether to show plot (True) or save to disk (False)
     """
     final_errors = []
     
@@ -507,7 +541,10 @@ def main_stat_1D(n_trials=100, n_cells=50):
     plt.xlabel('Mean Error')
     plt.ylabel('Count')
     plt.grid(True)
-    plt.savefig('final_mean_errors_histogram.png')  # Save plot to disk
+    if show_plot:
+        plt.show()
+    else:
+        plt.savefig('final_mean_errors_histogram.png')  # Save plot to disk
     
     # Display statistics
     print("\nError Statistics:")
@@ -517,4 +554,23 @@ def main_stat_1D(n_trials=100, n_cells=50):
     print(f"Max: {np.max(final_errors):.4f}")
 
 if __name__ == "__main__":
-    main_stat_1D()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Place field system analysis and demonstration')
+    subparsers = parser.add_subparsers(dest='command', help='Command to run')
+    
+    # Parser for stat command
+    stat_parser = subparsers.add_parser('stat', help='Run statistical analysis on 1D system')
+    stat_parser.add_argument('--show', action='store_true', help='Show plot instead of saving to disk')
+    
+    # Parser for demo command
+    demo_parser = subparsers.add_parser('demo', help='Run demonstration of all systems')
+    
+    args = parser.parse_args()
+    
+    if args.command == 'stat':
+        main_stat_1D(show_plot=args.show)
+    elif args.command == 'demo':
+        main_demo()
+    else:
+        parser.print_help()

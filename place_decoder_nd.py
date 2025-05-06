@@ -14,12 +14,17 @@ class PlaceFieldSystemBase(ABC):
         """
         self.n_cells_per_dim = n_cells_per_dim
         self.pos_range = pos_range
-        self.centers = self._generate_centers()
+        # Set GPU device first
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
         # Set width of Gaussian response (adjust this to control overlap)
         self.sigma = (pos_range[1] - pos_range[0]) / (n_cells_per_dim * 0.5)
         
+        # Generate centers directly as tensor
+        self.centers = self._generate_centers().to(self.device)
+        
         # Initialize decoder weights (will be trained later)
-        self.weights = torch.nn.Parameter(torch.randn(self.total_cells, self.n_dims))
+        self.weights = torch.nn.Parameter(torch.randn(self.total_cells, self.n_dims, device=self.device))
     
     @property
     @abstractmethod
@@ -37,20 +42,38 @@ class PlaceFieldSystemBase(ABC):
         """Generate centers for place cells."""
         pass
     
-    def compute_place_field(self, position):
-        """Compute the response of all place cells for a given position."""
-        position = np.array(position)
-        # Compute distances to all centers
-        distances = np.sqrt(np.sum((self.centers - position) ** 2, axis=1))
+    def compute_place_field(self, positions):
+        """Compute the response of all place cells for given positions.
+        
+        Args:
+            positions: tensor of shape (batch_size, n_dims) or (n_dims,)
+        """
+        if not isinstance(positions, torch.Tensor):
+            positions = torch.tensor(positions, dtype=torch.float32, device=self.device)
+        if positions.dim() == 1:
+            positions = positions.unsqueeze(0)
+            
+        positions = positions.to(self.device)
+        
+        # Compute distances for all positions at once
+        # centers: (total_cells, n_dims)
+        # positions: (batch_size, n_dims)
+        # distances: (batch_size, total_cells)
+        distances = torch.sqrt(torch.sum((self.centers.unsqueeze(0) - positions.unsqueeze(1)) ** 2, dim=2))
         # Compute Gaussian response
-        responses = np.exp(-0.5 * (distances / self.sigma) ** 2)
-        return responses
+        responses = torch.exp(-0.5 * (distances / self.sigma) ** 2)
+        
+        return responses.squeeze()
     
     def decode_position(self, place_field):
         """Decode position from place cell responses."""
-        place_field_tensor = torch.tensor(place_field, dtype=torch.float32)
+        if not isinstance(place_field, torch.Tensor):
+            place_field = torch.tensor(place_field, dtype=torch.float32, device=self.device)
+        if place_field.dim() == 1:
+            place_field = place_field.unsqueeze(0)
+            
         # Weighted sum for each dimension
-        return torch.matmul(place_field_tensor, self.weights)
+        return torch.matmul(place_field, self.weights)
     
     @abstractmethod
     def plot_place_fields(self):
@@ -74,52 +97,59 @@ class PlaceFieldSystem1D(PlaceFieldSystemBase):
     
     def _generate_centers(self):
         """Generate 1D grid of place cell centers."""
-        centers = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        return centers.reshape(-1, 1)
+        return torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32).reshape(-1, 1)
     
     def plot_place_fields(self):
         """Plot place fields for 1D case."""
-        positions = np.linspace(self.pos_range[0], self.pos_range[1], 200)
-        responses = np.array([self.compute_place_field([pos]) for pos in positions])
-        
-        plt.figure(figsize=(10, 5))
-        plt.plot(positions, responses)
-        plt.title('1D Place Cell Response Curves')
-        plt.xlabel('Position')
-        plt.ylabel('Response')
-        plt.grid(True)
-        plt.show()
+        with torch.no_grad():
+            # Generate positions on device
+            positions = torch.linspace(self.pos_range[0], self.pos_range[1], 200, device=self.device).reshape(-1, 1)
+            # Compute responses in one batch
+            responses = self.compute_place_field(positions).cpu().numpy()
+            positions = positions.squeeze().cpu().numpy()
+            
+            plt.figure(figsize=(10, 5))
+            plt.plot(positions, responses)
+            plt.title('1D Place Cell Response Curves')
+            plt.xlabel('Position')
+            plt.ylabel('Response')
+            plt.grid(True)
+            plt.show()
     
     def plot_decoder_weights(self):
         """Plot decoder weights for 1D case."""
-        weights = self.weights.detach().numpy()
-        centers = self.centers.flatten()
-        
-        plt.figure(figsize=(10, 4))
-        plt.plot(centers, weights, 'b-', label='Weights')
-        plt.scatter(centers, weights, c='b', alpha=0.6)
-        plt.title('1D Decoder Weights')
-        plt.xlabel('Cell Center Position')
-        plt.ylabel('Weight')
-        plt.grid(True)
-        plt.legend()
-        plt.show()
+        with torch.no_grad():
+            weights = self.weights.cpu().numpy()
+            centers = self.centers.cpu().flatten()
+            
+            plt.figure(figsize=(10, 4))
+            plt.plot(centers, weights, 'b-', label='Weights')
+            plt.scatter(centers, weights, c='b', alpha=0.6)
+            plt.title('1D Decoder Weights')
+            plt.xlabel('Cell Center Position')
+            plt.ylabel('Weight')
+            plt.grid(True)
+            plt.legend()
+            plt.show()
     
     def plot_population_response(self, position):
         """Plot population response for 1D case."""
-        responses = self.compute_place_field([position])
-        
-        plt.figure(figsize=(10, 4))
-        plt.bar(np.arange(self.total_cells), responses, alpha=0.6)
-        plt.axvline(x=(position - self.pos_range[0]) / 
-                   (self.pos_range[1] - self.pos_range[0]) * self.total_cells,
-                   color='r', linestyle='--', label=f'True Position: {position:.2f}')
-        plt.title(f'1D Population Response at Position {position:.2f}')
-        plt.xlabel('Cell Index')
-        plt.ylabel('Response')
-        plt.grid(True)
-        plt.legend()
-        plt.show()
+        with torch.no_grad():
+            if not isinstance(position, torch.Tensor):
+                position = torch.tensor([position], dtype=torch.float32, device=self.device)
+            responses = self.compute_place_field(position).cpu().numpy()
+            
+            plt.figure(figsize=(10, 4))
+            plt.bar(np.arange(self.total_cells), responses, alpha=0.6)
+            plt.axvline(x=(position.item() - self.pos_range[0]) / 
+                       (self.pos_range[1] - self.pos_range[0]) * self.total_cells,
+                       color='r', linestyle='--', label=f'True Position: {position.item():.2f}')
+            plt.title(f'1D Population Response at Position {position.item():.2f}')
+            plt.xlabel('Cell Index')
+            plt.ylabel('Response')
+            plt.grid(True)
+            plt.legend()
+            plt.show()
 
 class PlaceFieldSystem2D(PlaceFieldSystemBase):
     @property
@@ -128,85 +158,93 @@ class PlaceFieldSystem2D(PlaceFieldSystemBase):
     
     def _generate_centers(self):
         """Generate 2D grid of place cell centers."""
-        x = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        y = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        xx, yy = np.meshgrid(x, y)
-        return np.column_stack((xx.ravel(), yy.ravel()))
+        x = torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32)
+        y = torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32)
+        xx, yy = torch.meshgrid(x, y, indexing='ij')
+        return torch.stack([xx.flatten(), yy.flatten()], dim=1)
     
     def plot_place_fields(self):
         """Plot example place fields for 2D case."""
-        x = np.linspace(self.pos_range[0], self.pos_range[1], 50)
-        y = np.linspace(self.pos_range[0], self.pos_range[1], 50)
-        xx, yy = np.meshgrid(x, y)
-        
-        # Plot responses for a few example cells
-        fig = plt.figure(figsize=(15, 5))
-        example_cells = [0, self.total_cells // 4, self.total_cells // 2]
-        
-        for idx, cell_idx in enumerate(example_cells):
-            ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
-            responses = np.array([self.compute_place_field([x, y])[cell_idx] 
-                                for x, y in zip(xx.ravel(), yy.ravel())])
-            responses = responses.reshape(xx.shape)
+        with torch.no_grad():
+            x = torch.linspace(self.pos_range[0], self.pos_range[1], 50, device=self.device)
+            y = torch.linspace(self.pos_range[0], self.pos_range[1], 50, device=self.device)
+            xx, yy = torch.meshgrid(x, y, indexing='ij')
+            positions = torch.stack([xx.flatten(), yy.flatten()], dim=1)
             
-            surf = ax.plot_surface(xx, yy, responses, cmap='viridis')
-            plt.colorbar(surf, ax=ax)
-            ax.set_title(f'2D Place Cell {cell_idx}')
-            ax.set_xlabel('X Position')
-            ax.set_ylabel('Y Position')
-            ax.set_zlabel('Response')
-        
-        plt.tight_layout()
-        plt.show()
+            # Compute responses for all positions at once
+            all_responses = self.compute_place_field(positions)
+            
+            # Plot responses for a few example cells
+            fig = plt.figure(figsize=(15, 5))
+            example_cells = [0, self.total_cells // 4, self.total_cells // 2]
+            
+            for idx, cell_idx in enumerate(example_cells):
+                ax = fig.add_subplot(1, 3, idx + 1, projection='3d')
+                responses = all_responses[:, cell_idx].reshape(50, 50).cpu().numpy()
+                
+                surf = ax.plot_surface(xx.cpu().numpy(), yy.cpu().numpy(), responses, cmap='viridis')
+                plt.colorbar(surf, ax=ax)
+                ax.set_title(f'2D Place Cell {cell_idx}')
+                ax.set_xlabel('X Position')
+                ax.set_ylabel('Y Position')
+                ax.set_zlabel('Response')
+            
+            plt.tight_layout()
+            plt.show()
     
     def plot_decoder_weights(self):
         """Plot decoder weights for 2D case."""
-        weights = self.weights.detach().numpy()
-        
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
-        
-        # Reshape weights for each output dimension
-        weight_grid_x = weights[:, 0].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
-        weight_grid_y = weights[:, 1].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
-        
-        # Plot X-dimension weights
-        im1 = ax1.imshow(weight_grid_x, extent=[self.pos_range[0], self.pos_range[1],
-                                               self.pos_range[0], self.pos_range[1]],
-                        origin='lower', cmap='RdBu_r')
-        plt.colorbar(im1, ax=ax1, label='Weight Value')
-        ax1.set_title('X-dimension Decoder Weights')
-        ax1.set_xlabel('X Position')
-        ax1.set_ylabel('Y Position')
-        
-        # Plot Y-dimension weights
-        im2 = ax2.imshow(weight_grid_y, extent=[self.pos_range[0], self.pos_range[1],
-                                               self.pos_range[0], self.pos_range[1]],
-                        origin='lower', cmap='RdBu_r')
-        plt.colorbar(im2, ax=ax2, label='Weight Value')
-        ax2.set_title('Y-dimension Decoder Weights')
-        ax2.set_xlabel('X Position')
-        ax2.set_ylabel('Y Position')
-        
-        plt.tight_layout()
-        plt.show()
+        with torch.no_grad():
+            weights = self.weights.cpu().numpy()
+            
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4))
+            
+            # Reshape weights for each output dimension
+            weight_grid_x = weights[:, 0].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
+            weight_grid_y = weights[:, 1].reshape(self.n_cells_per_dim, self.n_cells_per_dim)
+            
+            # Plot X-dimension weights
+            im1 = ax1.imshow(weight_grid_x, extent=[self.pos_range[0], self.pos_range[1],
+                                                   self.pos_range[0], self.pos_range[1]],
+                            origin='lower', cmap='RdBu_r')
+            plt.colorbar(im1, ax=ax1, label='Weight Value')
+            ax1.set_title('X-dimension Decoder Weights')
+            ax1.set_xlabel('X Position')
+            ax1.set_ylabel('Y Position')
+            
+            # Plot Y-dimension weights
+            im2 = ax2.imshow(weight_grid_y, extent=[self.pos_range[0], self.pos_range[1],
+                                                   self.pos_range[0], self.pos_range[1]],
+                            origin='lower', cmap='RdBu_r')
+            plt.colorbar(im2, ax=ax2, label='Weight Value')
+            ax2.set_title('Y-dimension Decoder Weights')
+            ax2.set_xlabel('X Position')
+            ax2.set_ylabel('Y Position')
+            
+            plt.tight_layout()
+            plt.show()
     
     def plot_population_response(self, position):
         """Plot population response for 2D case."""
-        responses = self.compute_place_field(position)
-        response_grid = responses.reshape(self.n_cells_per_dim, self.n_cells_per_dim)
-        
-        plt.figure(figsize=(8, 6))
-        plt.imshow(response_grid, extent=[self.pos_range[0], self.pos_range[1],
-                                        self.pos_range[0], self.pos_range[1]],
-                  origin='lower', cmap='viridis')
-        plt.plot(position[0], position[1], 'r*', markersize=15, 
-                label=f'True Position: ({position[0]:.2f}, {position[1]:.2f})')
-        plt.colorbar(label='Response')
-        plt.title('2D Population Response')
-        plt.xlabel('X Position')
-        plt.ylabel('Y Position')
-        plt.legend()
-        plt.show()
+        with torch.no_grad():
+            if not isinstance(position, torch.Tensor):
+                position = torch.tensor(position, dtype=torch.float32, device=self.device)
+            responses = self.compute_place_field(position)
+            response_grid = responses.reshape(self.n_cells_per_dim, self.n_cells_per_dim).cpu().numpy()
+            pos_np = position.cpu().numpy()
+            
+            plt.figure(figsize=(8, 6))
+            plt.imshow(response_grid, extent=[self.pos_range[0], self.pos_range[1],
+                                          self.pos_range[0], self.pos_range[1]],
+                    origin='lower', cmap='viridis')
+            plt.plot(pos_np[0], pos_np[1], 'r*', markersize=15, 
+                    label=f'True Position: ({pos_np[0]:.2f}, {pos_np[1]:.2f})')
+            plt.colorbar(label='Response')
+            plt.title('2D Population Response')
+            plt.xlabel('X Position')
+            plt.ylabel('Y Position')
+            plt.legend()
+            plt.show()
 
 class PlaceFieldSystem3D(PlaceFieldSystemBase):
     @property
@@ -215,92 +253,107 @@ class PlaceFieldSystem3D(PlaceFieldSystemBase):
     
     def _generate_centers(self):
         """Generate 3D grid of place cell centers."""
-        x = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        y = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        z = np.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim)
-        xx, yy, zz = np.meshgrid(x, y, z)
-        return np.column_stack((xx.ravel(), yy.ravel(), zz.ravel()))
+        x = torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32)
+        y = torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32)
+        z = torch.linspace(self.pos_range[0], self.pos_range[1], self.n_cells_per_dim, dtype=torch.float32)
+        xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
+        return torch.stack([xx.flatten(), yy.flatten(), zz.flatten()], dim=1)
     
     def plot_place_fields(self):
         """Plot example place fields for 3D case using slices."""
-        x = np.linspace(self.pos_range[0], self.pos_range[1], 20)
-        y = np.linspace(self.pos_range[0], self.pos_range[1], 20)
-        xx, yy = np.meshgrid(x, y)
-        
-        # Plot responses for example cells at different z-slices
-        fig = plt.figure(figsize=(15, 5))
-        example_cell = self.total_cells // 2
-        z_slices = [-0.5, 0.0, 0.5]
-        
-        for idx, z in enumerate(z_slices):
-            ax = fig.add_subplot(1, 3, idx + 1)
-            responses = np.array([self.compute_place_field([x, y, z])[example_cell] 
-                                for x, y in zip(xx.ravel(), yy.ravel())])
-            responses = responses.reshape(xx.shape)
+        with torch.no_grad():
+            x = torch.linspace(self.pos_range[0], self.pos_range[1], 20, device=self.device)
+            y = torch.linspace(self.pos_range[0], self.pos_range[1], 20, device=self.device)
+            xx, yy = torch.meshgrid(x, y, indexing='ij')
             
-            im = ax.imshow(responses, extent=[self.pos_range[0], self.pos_range[1],
-                                            self.pos_range[0], self.pos_range[1]],
-                          origin='lower', cmap='viridis')
-            plt.colorbar(im, ax=ax)
-            ax.set_title(f'3D Place Cell at z={z:.1f}')
-            ax.set_xlabel('X Position')
-            ax.set_ylabel('Y Position')
-        
-        plt.tight_layout()
-        plt.show()
+            # Plot responses for example cells at different z-slices
+            fig = plt.figure(figsize=(15, 5))
+            example_cell = self.total_cells // 2
+            z_slices = [-0.5, 0.0, 0.5]
+            
+            # Create all positions at once for batch processing
+            positions = []
+            for z in z_slices:
+                xy_points = torch.stack([xx.flatten(), yy.flatten()], dim=1)
+                z_points = torch.full((xy_points.shape[0], 1), z, device=self.device)
+                positions.append(torch.cat([xy_points, z_points], dim=1))
+            
+            all_positions = torch.cat(positions)
+            all_responses = self.compute_place_field(all_positions)
+            
+            for idx, z in enumerate(z_slices):
+                ax = fig.add_subplot(1, 3, idx + 1)
+                start_idx = idx * 400  # 20x20=400 points per slice
+                responses = all_responses[start_idx:start_idx + 400, example_cell].reshape(20, 20).cpu().numpy()
+                
+                im = ax.imshow(responses, extent=[self.pos_range[0], self.pos_range[1],
+                                              self.pos_range[0], self.pos_range[1]],
+                            origin='lower', cmap='viridis')
+                plt.colorbar(im, ax=ax)
+                ax.set_title(f'3D Place Cell at z={z:.1f}')
+                ax.set_xlabel('X Position')
+                ax.set_ylabel('Y Position')
+            
+            plt.tight_layout()
+            plt.show()
     
     def plot_decoder_weights(self):
         """Plot decoder weights for 3D case."""
-        weights = self.weights.detach().numpy()
-        
-        fig = plt.figure(figsize=(15, 4))
-        titles = ['X-dimension', 'Y-dimension', 'Z-dimension']
-        
-        for dim in range(3):
-            weight_cube = weights[:, dim].reshape(self.n_cells_per_dim, 
-                                                self.n_cells_per_dim,
-                                                self.n_cells_per_dim)
+        with torch.no_grad():
+            weights = self.weights.cpu().numpy()
             
-            # Show middle slice for each axis
-            ax = fig.add_subplot(1, 3, dim + 1)
-            slice_data = weight_cube[:, :, self.n_cells_per_dim//2]
+            fig = plt.figure(figsize=(15, 4))
+            titles = ['X-dimension', 'Y-dimension', 'Z-dimension']
             
-            im = ax.imshow(slice_data, origin='lower', cmap='RdBu_r',
-                          extent=[self.pos_range[0], self.pos_range[1],
-                                 self.pos_range[0], self.pos_range[1]])
-            plt.colorbar(im, ax=ax, label='Weight Value')
-            ax.set_title(f'{titles[dim]} Weights\n(Middle Z-slice)')
-            ax.set_xlabel('X Position')
-            ax.set_ylabel('Y Position')
-        
-        plt.tight_layout()
-        plt.show()
+            for dim in range(3):
+                weight_cube = weights[:, dim].reshape(self.n_cells_per_dim, 
+                                                    self.n_cells_per_dim,
+                                                    self.n_cells_per_dim)
+                
+                # Show middle slice for each axis
+                ax = fig.add_subplot(1, 3, dim + 1)
+                slice_data = weight_cube[:, :, self.n_cells_per_dim//2]
+                
+                im = ax.imshow(slice_data, origin='lower', cmap='RdBu_r',
+                              extent=[self.pos_range[0], self.pos_range[1],
+                                     self.pos_range[0], self.pos_range[1]])
+                plt.colorbar(im, ax=ax, label='Weight Value')
+                ax.set_title(f'{titles[dim]} Weights\n(Middle Z-slice)')
+                ax.set_xlabel('X Position')
+                ax.set_ylabel('Y Position')
+            
+            plt.tight_layout()
+            plt.show()
     
     def plot_population_response(self, position):
         """Plot population response for 3D case using orthogonal slices."""
-        responses = self.compute_place_field(position)
-        response_cube = responses.reshape(self.n_cells_per_dim, 
-                                       self.n_cells_per_dim,
-                                       self.n_cells_per_dim)
-        
-        # Plot three orthogonal slices through the true position
-        fig = plt.figure(figsize=(15, 5))
-        slice_names = ['YZ', 'XZ', 'XY']
-        slices = [
-            response_cube[self.n_cells_per_dim//2, :, :],
-            response_cube[:, self.n_cells_per_dim//2, :],
-            response_cube[:, :, self.n_cells_per_dim//2]
-        ]
-        
-        for idx, (slice_data, name) in enumerate(zip(slices, slice_names)):
-            ax = fig.add_subplot(1, 3, idx + 1)
-            im = ax.imshow(slice_data, origin='lower', cmap='viridis')
-            plt.colorbar(im, ax=ax)
-            ax.set_title(f'3D Population Response ({name} plane)')
-        
-        plt.suptitle(f'Position: ({position[0]:.2f}, {position[1]:.2f}, {position[2]:.2f})')
-        plt.tight_layout()
-        plt.show()
+        with torch.no_grad():
+            if not isinstance(position, torch.Tensor):
+                position = torch.tensor(position, dtype=torch.float32, device=self.device)
+            responses = self.compute_place_field(position)
+            response_cube = responses.reshape(self.n_cells_per_dim, 
+                                           self.n_cells_per_dim,
+                                           self.n_cells_per_dim).cpu().numpy()
+            pos_np = position.cpu().numpy()
+            
+            # Plot three orthogonal slices through the true position
+            fig = plt.figure(figsize=(15, 5))
+            slice_names = ['YZ', 'XZ', 'XY']
+            slices = [
+                response_cube[self.n_cells_per_dim//2, :, :],
+                response_cube[:, self.n_cells_per_dim//2, :],
+                response_cube[:, :, self.n_cells_per_dim//2]
+            ]
+            
+            for idx, (slice_data, name) in enumerate(zip(slices, slice_names)):
+                ax = fig.add_subplot(1, 3, idx + 1)
+                im = ax.imshow(slice_data, origin='lower', cmap='viridis')
+                plt.colorbar(im, ax=ax)
+                ax.set_title(f'3D Population Response ({name} plane)')
+            
+            plt.suptitle(f'Position: ({pos_np[0]:.2f}, {pos_np[1]:.2f}, {pos_np[2]:.2f})')
+            plt.tight_layout()
+            plt.show()
 
 def plot_training_curves(losses, accuracies):
     """Plot training loss and accuracy curves."""
@@ -332,22 +385,16 @@ def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_
     accuracies = []
     
     for epoch in range(n_epochs):
-        # Generate random positions for training
-        positions = np.random.uniform(system.pos_range[0], 
-                                      system.pos_range[1], 
-                                      (batch_size, system.n_dims))
+        # Generate random positions for training directly on device
+        positions = torch.rand(batch_size, system.n_dims, device=system.device) * \
+                   (system.pos_range[1] - system.pos_range[0]) + system.pos_range[0]
         
-        # Compute place fields
-        place_fields = np.array([system.compute_place_field(pos) 
-                                 for pos in positions])
-        place_fields_tensor = torch.tensor(place_fields, dtype=torch.float32)
-        positions_tensor = torch.tensor(positions, dtype=torch.float32)
-        
-        # Forward pass
-        decoded_positions = torch.matmul(place_fields_tensor, system.weights)
+        # Compute place fields and decoded positions in one pass
+        place_fields = system.compute_place_field(positions)
+        decoded_positions = system.decode_position(place_fields)
         
         # Compute loss (MSE)
-        loss = torch.mean(torch.sum((decoded_positions - positions_tensor) ** 2, dim=1))
+        loss = torch.mean(torch.sum((decoded_positions - positions) ** 2, dim=1))
         
         # Backward pass and optimize
         optimizer.zero_grad()
@@ -357,16 +404,17 @@ def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_
         losses.append(loss.item())
         
         # Compute validation accuracy
-        val_positions = np.random.uniform(system.pos_range[0], 
-                                          system.pos_range[1], 
-                                          (val_size, system.n_dims))
-        val_place_fields = np.array([system.compute_place_field(pos) 
-                                     for pos in val_positions])
-        val_decoded = np.array([system.decode_position(pf).detach().numpy() 
-                                for pf in val_place_fields])
-        errors = np.sqrt(np.sum((val_decoded - val_positions) ** 2, axis=1))
-        mean_error = np.mean(errors)
-        accuracies.append(mean_error)
+        with torch.no_grad():
+            # Generate validation positions directly on device
+            val_positions = torch.rand(val_size, system.n_dims, device=system.device) * \
+                          (system.pos_range[1] - system.pos_range[0]) + system.pos_range[0]
+            
+            # Compute validation error in one pass
+            val_place_fields = system.compute_place_field(val_positions)
+            val_decoded = system.decode_position(val_place_fields)
+            errors = torch.sqrt(torch.sum((val_decoded - val_positions) ** 2, dim=1))
+            mean_error = errors.mean().item()
+            accuracies.append(mean_error)
         
         if verbose and (epoch + 1) % 100 == 0:
             print(f'Epoch {epoch+1}, Loss: {loss.item():.6f}, Mean Error: {mean_error:.4f}')
@@ -375,28 +423,26 @@ def train_decoder(system, n_epochs=1000, batch_size=32, learning_rate=0.01, val_
 
 def evaluate_decoder(system, n_test=1000):
     """Evaluate decoder accuracy with test positions."""
-    # Generate test positions
-    test_positions = np.random.uniform(system.pos_range[0], 
-                                       system.pos_range[1], 
-                                       (n_test, system.n_dims))
-    
-    # Get decoded positions
-    decoded_positions = []
-    for pos in test_positions:
-        place_field = system.compute_place_field(pos)
-        decoded_pos = system.decode_position(place_field).detach().numpy()
-        decoded_positions.append(decoded_pos)
-    
-    decoded_positions = np.array(decoded_positions)
-    errors = np.sqrt(np.sum((decoded_positions - test_positions) ** 2, axis=1))
-    
-    print(f"\nAccuracy Statistics ({system.n_dims}D):")
-    print(f"Mean Error: {np.mean(errors):.4f}")
-    print(f"Standard Deviation: {np.std(errors):.4f}")
-    print(f"Median Error: {np.median(errors):.4f}")
-    print(f"90th Percentile Error: {np.percentile(errors, 90):.4f}")
-    
-    return errors
+    with torch.no_grad():
+        # Generate test positions directly on device
+        test_positions = torch.rand(n_test, system.n_dims, device=system.device) * \
+                        (system.pos_range[1] - system.pos_range[0]) + system.pos_range[0]
+        
+        # Compute everything in one pass
+        place_fields = system.compute_place_field(test_positions)
+        decoded_positions = system.decode_position(place_fields)
+        
+        # Calculate errors
+        errors = torch.sqrt(torch.sum((decoded_positions - test_positions) ** 2, dim=1))
+        errors_np = errors.cpu().numpy()
+        
+        print(f"\nAccuracy Statistics ({system.n_dims}D):")
+        print(f"Mean Error: {np.mean(errors_np):.4f}")
+        print(f"Standard Deviation: {np.std(errors_np):.4f}")
+        print(f"Median Error: {np.median(errors_np):.4f}")
+        print(f"90th Percentile Error: {np.percentile(errors_np, 90):.4f}")
+        
+        return errors_np
 
 def main_demo():
     # Test all three systems
@@ -454,13 +500,14 @@ def main_stat_1D(n_trials=100, n_cells=50):
         losses, accuracies = train_decoder(system, verbose=False)
         final_errors.append(accuracies[-1])
     
-    # Plot histogram
+    # Save histogram to disk
     plt.figure(figsize=(10, 6))
     plt.hist(final_errors, bins=30)
     plt.title('Distribution of Final Mean Errors')
     plt.xlabel('Mean Error')
     plt.ylabel('Count')
     plt.grid(True)
+    plt.savefig('final_mean_errors_histogram.png')  # Save plot to disk
     
     # Display statistics
     print("\nError Statistics:")
@@ -468,8 +515,6 @@ def main_stat_1D(n_trials=100, n_cells=50):
     print(f"Std: {np.std(final_errors):.4f}")
     print(f"Min: {np.min(final_errors):.4f}")
     print(f"Max: {np.max(final_errors):.4f}")
-    
-    plt.show()
 
 if __name__ == "__main__":
     main_stat_1D()
